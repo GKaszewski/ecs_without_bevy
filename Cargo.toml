@@ -1,5 +1,5 @@
 [package]
-name = "engine_rs"
+name = "ecs_without_bevy"
 version = "0.1.0"
 edition = "2021"
 
