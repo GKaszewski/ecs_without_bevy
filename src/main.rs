@@ -4,11 +4,11 @@ pub mod game_of_life;
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[clap(long, default_value = "4")]
+    #[clap(long, default_value = "600")]
     width: u32,
-    #[clap(long, default_value = "4")]
+    #[clap(long, default_value = "400")]
     height: u32,
-    #[clap(short, long, default_value = "10")]
+    #[clap(short, long, default_value = "100")]
     generations: u32,
 }
 
@@ -19,9 +19,7 @@ fn main() {
     let generations = args.generations;
     println!(
         "Running Game of Life with width: {:?}, height: {:?}, generations: {:?}",
-        width,
-        height,
-        generations
+        width, height, generations
     );
     game_of_life::initialize(width, height, generations);
 }

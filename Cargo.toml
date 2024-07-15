@@ -12,3 +12,8 @@ integer-sqrt = "0.1.5"
 kdtree = "0.7.0"
 rand = "0.8.5"
 rayon = "1.8.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -1,10 +1,7 @@
-#[allow(dead_code)]
 use bevy_ecs::prelude::*;
-use rand::{ thread_rng, Rng };
 use integer_sqrt::IntegerSquareRoot;
+use std::collections::HashMap;
 use std::time::Instant;
-use kdtree::KdTree;
-use kdtree::distance::squared_euclidean;
 
 #[derive(Component, PartialEq, Eq, Copy, Clone, Debug, Default)]
 pub struct Position {
@@ -26,7 +23,11 @@ pub struct State(bool);
 
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 { write!(f, "Alive") } else { write!(f, "Dead") }
+        if self.0 {
+            write!(f, "Alive")
+        } else {
+            write!(f, "Dead")
+        }
     }
 }
 
@@ -42,11 +43,9 @@ pub struct Neighbors(u8);
 #[derive(Resource)]
 pub struct Generations(u32);
 
-const K_DIMENSIONS: usize = 2;
-
 #[derive(Resource)]
-struct KdTreeResource {
-    kd_tree: KdTree<f64, (i32, i32), [f64; K_DIMENSIONS]>,
+struct CellPositions {
+    map: HashMap<(i32, i32), bool>,
 }
 
 #[derive(Resource)]
@@ -65,28 +64,25 @@ pub struct CellBundle {
     pub neighbors: Neighbors,
 }
 
-fn rebuild_kd_tree(
+fn rebuild_cell_positions(
     query: Query<(&Position, &State)>,
-    mut kd_tree_resource: ResMut<KdTreeResource>,
-    mut cells_changed: ResMut<CellsChanged>
+    mut cell_positions: ResMut<CellPositions>,
+    mut cells_changed: ResMut<CellsChanged>,
 ) {
     if !cells_changed.0 {
         return;
     }
 
     let start = Instant::now();
-    kd_tree_resource.kd_tree = KdTree::new(K_DIMENSIONS);
+    cell_positions.map.clear();
     for (pos, state) in query.iter() {
-        if state.0 {
-            let point = [pos.x as f64, pos.y as f64];
-            kd_tree_resource.kd_tree.add(point, (pos.x, pos.y)).unwrap();
-        }
+        cell_positions.map.insert((pos.x, pos.y), state.0);
     }
 
     cells_changed.0 = false;
 
     let duration = start.elapsed();
-    println!("Building kd tree took {:?}", duration);
+    //println!("Building cell positions took {:?}", duration);
 }
 
 // Cell entity - cell is a tuple of Position, State, and Neighbors
@@ -97,9 +93,11 @@ pub fn spawn_cells(world: &mut World, width: u32, height: u32) {
     let to_spawn = (0..cells_to_spawn_count).map(|i| {
         let x = i % width;
         let y = i / width;
-        let position = Position { x: x as i32, y: y as i32 };
-        let mut rng = thread_rng();
-        let state = State(rng.gen_bool(0.5));
+        let position = Position {
+            x: x as i32,
+            y: y as i32,
+        };
+        let state = State(true);
         CellBundle {
             position,
             state,
@@ -119,9 +117,15 @@ pub fn spawn_block_cells(world: &mut World, width: u32, height: u32) {
     let to_spawn = (0..cells_to_spawn_count).map(|i| {
         let x = i % width;
         let y = i / width;
-        let position = Position { x: x as i32, y: y as i32 };
+        let position = Position {
+            x: x as i32,
+            y: y as i32,
+        };
         let state = State(true);
-        println!("Spawning block cell at position {:?}, with state {:?}", position, state);
+        println!(
+            "Spawning block cell at position {:?}, with state {:?}",
+            position, state
+        );
         CellBundle {
             position,
             state,
@@ -141,7 +145,10 @@ pub fn spawn_beehive_cells(world: &mut World, width: u32, height: u32) {
     let to_spawn = (0..cells_to_spawn_count).map(|i| {
         let x = i % width;
         let y = i / width;
-        let position = Position { x: x as i32, y: y as i32 };
+        let position = Position {
+            x: x as i32,
+            y: y as i32,
+        };
         let state = match (x, y) {
             (2, 0) => State(true),
             (3, 0) => State(true),
@@ -170,7 +177,10 @@ fn spawn_blinker_cells(world: &mut World, width: u32, height: u32) {
     let to_spawn = (0..cells_to_spawn_count).map(|i| {
         let x = i % width;
         let y = i / width;
-        let position = Position { x: x as i32, y: y as i32 };
+        let position = Position {
+            x: x as i32,
+            y: y as i32,
+        };
         let state = match (x, y) {
             (1, 0) => State(true),
             (1, 1) => State(true),
@@ -190,36 +200,43 @@ fn spawn_blinker_cells(world: &mut World, width: u32, height: u32) {
     println!("Spawning cells took {:?}", duration);
 }
 
-fn update_neighbors_system(
+fn update_neighbors_brute_force_system(
     mut query: Query<(&mut Neighbors, &Position)>,
-    kd_tree_resource: Res<KdTreeResource>
+    grid: Res<Grid>,
+    cell_positions: Res<CellPositions>,
 ) {
     let start = Instant::now();
-    query.par_iter_mut().for_each(|(mut neighbors, position)| {
-        let point = [position.x as f64, position.y as f64];
-        let neighbors_within_range = kd_tree_resource.kd_tree
-            .within(&point, 2.0, &squared_euclidean)
-            .unwrap();
-        let count = neighbors_within_range
-            .iter()
-            .filter(
-                |&&(_, pos)|
-                    (pos.0 - position.x).abs() <= 1 &&
-                    (pos.1 - position.y).abs() <= 1 &&
-                    *pos != (position.x, position.y)
-            )
-            .count() as u8;
-        // println!("Updating neighbors for position {:?} with count {:?}", position, count);
-        neighbors.0 = count;
+    query.par_iter_mut().for_each(|(mut neighbors, pos)| {
+        let mut count = 0;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+
+                let x = pos.x + dx;
+                let y = pos.y + dy;
+
+                if x >= 0 && x < (grid.width as i32) && y >= 0 && y < (grid.height as i32) {
+                    if let Some(state) = cell_positions.map.get(&(x, y)) {
+                        if *state {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+
+            neighbors.0 = count;
+        }
     });
 
     let duration = start.elapsed();
-    println!("Updating neighbors took {:?}", duration);
+    //println!("Updating neighbors (brute force) took {:?}", duration);
 }
 
 fn update_cells_system(
     mut query: Query<(&mut State, &Neighbors)>,
-    mut cells_changed: ResMut<CellsChanged>
+    mut cells_changed: ResMut<CellsChanged>,
 ) {
     let start = Instant::now();
     for (mut state, neighbors) in query.iter_mut() {
@@ -239,7 +256,7 @@ fn update_cells_system(
         }
     }
     let duration = start.elapsed();
-    println!("Updating cells took {:?}", duration);
+    //println!("Updating cells took {:?}", duration);
 }
 
 fn decrease_generation_system(mut generations: ResMut<Generations>) {
@@ -254,42 +271,41 @@ fn print_all_entities_system(mut query: Query<(Entity, &Position, &State, &Neigh
     for (entity, position, state, neighbors) in &mut query {
         println!(
             "Entity {:?} has position {:?}, state {:?}, and neighbors {:?}",
-            entity,
-            position,
-            state,
-            neighbors
+            entity, position, state, neighbors
         );
     }
 }
 
 pub fn initialize(width: u32, height: u32, generations: u32) {
-    let start = Instant::now();
     let mut world = World::new();
     world.insert_resource(Grid { width, height });
-    world.insert_resource(KdTreeResource { kd_tree: KdTree::new(K_DIMENSIONS) });
+    world.insert_resource(CellPositions {
+        map: HashMap::new(),
+    });
     world.insert_resource(CellsChanged(true));
     spawn_cells(&mut world, width, height);
     world.insert_resource(Generations { 0: generations });
     let mut schedule = Schedule::default();
-    schedule.add_systems((
-        (
-            rebuild_kd_tree,
-            update_neighbors_system,
-            update_cells_system,
-            rebuild_kd_tree,
-            update_neighbors_system,
-        ).chain(),
-        // print_all_entities_system,
-        decrease_generation_system,
-    ));
+    schedule.add_systems(((
+        rebuild_cell_positions,
+        update_neighbors_brute_force_system,
+        update_cells_system,
+        rebuild_cell_positions,
+        update_neighbors_brute_force_system,
+    )
+        .chain(),));
 
+    //schedule.add_systems(draw_cells_system);
+
+    let start = Instant::now();
     for _ in 0..generations {
         schedule.run(&mut world);
+
+        //println!("Iteration: {:?}", i);
     }
 
     let duration = start.elapsed();
-
-    println!("Simulation took {:?}", duration);
+    println!("Running {:?} generations took {:?}", generations, duration);
 }
 
 #[cfg(test)]
@@ -301,20 +317,26 @@ mod tests {
     #[test]
     fn test_block() {
         let mut world = World::new();
-        world.insert_resource(Grid { width: 2, height: 2 });
-        world.insert_resource(KdTreeResource { kd_tree: KdTree::new(K_DIMENSIONS) });
+        world.insert_resource(Grid {
+            width: 2,
+            height: 2,
+        });
         world.insert_resource(CellsChanged(true));
+        world.insert_resource(CellPositions {
+            map: HashMap::new(),
+        });
         spawn_block_cells(&mut world, 2, 2);
 
         let mut schedule = Schedule::default();
         schedule.add_systems(
             (
-                rebuild_kd_tree,
-                update_neighbors_system,
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
                 update_cells_system,
-                rebuild_kd_tree,
-                update_neighbors_system,
-            ).chain()
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
+            )
+                .chain(),
         );
         schedule.run(&mut world);
 
@@ -362,19 +384,25 @@ mod tests {
     #[test]
     fn test_beehive() {
         let mut world = World::new();
-        world.insert_resource(Grid { width: 6, height: 3 });
-        world.insert_resource(KdTreeResource { kd_tree: KdTree::new(K_DIMENSIONS) });
+        world.insert_resource(Grid {
+            width: 6,
+            height: 3,
+        });
         world.insert_resource(CellsChanged(true));
+        world.insert_resource(CellPositions {
+            map: HashMap::new(),
+        });
         spawn_beehive_cells(&mut world, 6, 3);
         let mut schedule = Schedule::default();
         schedule.add_systems(
             (
-                rebuild_kd_tree,
-                update_neighbors_system,
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
                 update_cells_system,
-                rebuild_kd_tree,
-                update_neighbors_system,
-            ).chain()
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
+            )
+                .chain(),
         );
         schedule.run(&mut world);
 
@@ -469,19 +497,25 @@ mod tests {
     #[test]
     fn test_blinker() {
         let mut world = World::new();
-        world.insert_resource(Grid { width: 6, height: 3 });
-        world.insert_resource(KdTreeResource { kd_tree: KdTree::new(K_DIMENSIONS) });
+        world.insert_resource(Grid {
+            width: 6,
+            height: 3,
+        });
         world.insert_resource(CellsChanged(true));
+        world.insert_resource(CellPositions {
+            map: HashMap::new(),
+        });
         spawn_blinker_cells(&mut world, 3, 3);
         let mut schedule = Schedule::default();
         schedule.add_systems(
             (
-                rebuild_kd_tree,
-                update_neighbors_system,
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
                 update_cells_system,
-                rebuild_kd_tree,
-                update_neighbors_system,
-            ).chain()
+                rebuild_cell_positions,
+                update_neighbors_brute_force_system,
+            )
+                .chain(),
         );
         println!("First run");
         schedule.run(&mut world);
